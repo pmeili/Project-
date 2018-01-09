@@ -1,0 +1,744 @@
+\documentclass{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{mathpazo}
+\usepackage[colorlinks = true,
+            linkcolor = blue,
+            urlcolor  = blue,
+            citecolor = blue,
+            anchorcolor = blue]{hyperref}
+\usepackage[round]{natbib}
+\usepackage{mathtools}
+
+\begin{document}
+\SweaveOpts{concordance=TRUE}
+\setlength{\parindent}{0pt}
+
+\begin{titlepage}
+	\newcommand{\HRule}{\rule{\linewidth}{0.5mm}} 
+	\center
+	\textsc{\LARGE University Of Zurich}\\[2cm]
+	\textsc{\Large STA 426 Project}\\[2cm]
+	\HRule\\[0.4cm]
+	{\huge\bfseries An analysis of the riborex package performance}\\[0.4cm]
+	\HRule\\[1.5cm]
+
+	\begin{minipage}{0.4\textwidth}
+		\begin{flushleft}
+			\large
+			\textit{Authors}\\
+			Meili Peter \\
+			Stutz Sascha
+		\end{flushleft}
+	\end{minipage}
+	~
+	\begin{minipage}{0.45\textwidth}
+		\begin{flushright}
+			\large
+			\textit{Supervisors}\\
+			Prof. Dr. Mark D. Robinson
+			Dr. Hubert Rehrauer
+			
+		\end{flushright}
+	\end{minipage}
+	
+	\vfill\vfill\vfill
+	{\large\today}
+	\vfill
+\end{titlepage}
+
+\tableofcontents
+\pagebreak
+
+
+\section{Introduction}
+\label{chap:Introdcution}
+
+The aim of this report is to (re-)produce the genome-wide mapping differences of ribosome profiling (short Ribo-Seq) data with the use of the Riborex (abbreviation for analyzing Ribo-seq ratios with expression) package \citep{Li2017} while measuring the computation time. The authors claim that the Riborex package "[...] is a method that is dramatically faster than available methods without sacrificing accuracy" \citep{Li2017}.\\ The analysis will be done with the same three so-called engines as in the paper, namely DESeq2 \citep{Love2014}, edgeR \citep{Robinson2010} and Voom \citep{Law2014}. Additionally, the Xtail \citep{Xiao2016} and Babel \citep{Olshen2013} package will be used in the same fashion, while it is refrained here from using RiboDiff, since this is not an R package nor can it be run in R. Hence, the focus lies on computing speed linked with precision.\\ The speed will be assessed as computation time the different methods take to identify differentially translated genes across two conditions by pairwise comparison of ribosome profiling data while the precision is compared with diagrams of the F1 score, accuracy and predictive values. 
+
+\section{Riborex package}
+
+The main goal of the Riborex package is to limit the trade-off between speed and accuracy which already established options do not convince in. Due to a simplified implementation of the mathematical structure Riborex should outperform already existing methods.:\\ 
+"Riborex directly leverages established RNA-seq analysis frameworks for all parameter estimation, providing users with a choice among robust engines for these computations.\citep{Li2017}".\\ 
+This states that existing engines (DESeq2, edgeR and Voom) for analyzing RNA-seq data are used in a way that a small rash in the base leads to an extensive one in the result. The natural dependence on mRNA levels are modelled as a generalized linear model. This is nothing new but what is different in this package, however, is that all parameters of the model are estimated simultaneously. Hence, the claimed improvement in speed without the loss of accuracy. Mathematically this looks as follows.
+
+
+\begin{gather}
+log(E(y_{gi})) = x^T_i  \beta_g + log(N_i)  \label{eq1} \\
+\nonumber\\
+y_{gi} : Read\ count\ of\ gene\ g\ in\ sample\ i\        \nonumber\\
+N_i : Total\ counted\ reads\                             \nonumber\\
+x_j : Covariate\ vector\ of\ treatment\ condition\ i\    \nonumber\\
+\beta_j : Vector\ of\ gene\ specific\ coefficients\ i\  \nonumber\\ 
+\nonumber
+\end{gather}
+Equation~\eqref{eq1} is how the aforementioned engines model the RNA-seq read count in a negative binomial distribution. The Riborex package on the other hand uses a slightly different approach to detect differentially translated genes from Ribo-seq as visible in equation~\eqref{eq2} (not considering $\alpha_g$, all other variables stay the same for interpretation as before).
+
+\begin{gather}
+log(E(r_{gi})) = x^T_i (\alpha_g+ \beta_g)+ log(R_i)  \label{eq2} \\
+\nonumber\\
+\alpha_g : Vector\ of\ how\ the\ translations\ differ\ from\ background\ expression\ level\  \nonumber\\ 
+\nonumber
+\end{gather}
+In the end both read counts are combined by constructing a design matrix with which $\alpha$ and $\beta$ can be fit simultaneously.
+
+
+\subsection{Practical usage}
+The package contains only the one function \texttt{riborex()} which has the option to specify a total of seven arguments (four without default).\\ 
+\texttt{riborex(rnaCntTable, riboCntTable, rnaCond, riboCond, engine = "DESeq2", contrast = NULL, minMeanCount = 1)} \\
+The abbreviations are mostly self explanatory (count tables and condition vectors must be specified) and will not be further discussed here (see the R help file). In a later stage of this paper this command will be used with the three different engines; DESeq2, edgeR and Voom. Furthermore, these three engines estimate the dispersion across all RNA- and Ribo-seq samples. On the other hand, edgeR estimates the dispersion for RNA- and Ribo-seq data separately and is not considered in this paper.
+
+\section{Datasets}
+As mentioned before, a lack of available datasets along with the needed information of the truly differentially translated genes was missing which therefore would not allow to compute and compare precision. As usual, data was simulated trying to replicate nature as precise as anyhow possible.
+The simulated data is equally distributed between up- and down-regulated in group two compared to group one.\\
+The count data is simulated from a negative binomial distribution while dispersion parameters are estimated from two sample datasets (one RNA and one Ribo count table) with the \texttt{estimateDisp()} command from the package \texttt{edgeR()} and then given over to the function.\\ 
+No outlier groups are introduced and genes with zero counts across all samples are excluded. These settings approximately correspond to the ones denoted $B^{625}_{625}$ in \citep{Soneson2014}.
+
+<<echo=F,results=hide>>=
+library(compcodeR)
+library(riborex)
+
+
+ngenes <- 10000  
+data(riborexdata)
+RNACntTable <- rna
+RiboCntTable <- ribo
+
+# Ribo
+means.ribo <- c(as.numeric(apply(RiboCntTable,1,mean )))[1:ngenes]  #Ribo
+disp.ribo.control <- estimateDisp(RiboCntTable[,1:2])$trended.dispersion[1:ngenes] #estimateDisp from X8 edgeR
+disp.ribo.treated <- estimateDisp(RiboCntTable[,3:4])$trended.dispersion[1:ngenes] #estimateDisp from X8 edgeR
+disp.ribo <- cbind(disp.ribo.control, disp.ribo.treated)
+
+
+means.rna <- c(as.numeric(apply(RNACntTable,1,mean )))[1:ngenes]
+disp.rna.control <- estimateDisp(RNACntTable[,1:2])$trended.dispersion[1:ngenes] 
+disp.rna.treated <- estimateDisp(RNACntTable[,3:4])$trended.dispersion[1:ngenes] 
+disp.rna <- cbind(disp.rna.control, disp.rna.treated)
+
+means <- list(means.rna, means.ribo)
+disp <- list(disp.rna, disp.ribo)
+
+diffExpr <- c(0.01, 0.1)
+nsamples <- c(2, 4)
+RnaOrRibo <- c(1, 2) # whereas 1 stands for RNA and 2 for Ribo
+@
+
+<<echo =T,results=hide>>=
+for(i in 1:length(diffExpr)){
+  for(j in 1:length(nsamples)){
+    for(v in 1:length(RnaOrRibo)){
+      myData <- generateSyntheticData(dataset = "B_625_625", 
+                                  n.vars = ngenes, 
+                                  samples.per.cond = nsamples[j], 
+                                  n.diffexp = ngenes*diffExpr[i],
+                                  relmeans = means[[v]], 
+                                  dispersions = disp[[v]])
+      
+      type <- ifelse(RnaOrRibo[v] == 1, "RNA", "Ribo")
+      
+      assign(paste0(type, ".nsamples", nsamples[j],".percDiffExpre"
+                    , diffExpr[i], sep = ""), myData)
+    }
+  }
+}
+
+@
+
+The code junk above shows the standard use of the \texttt{generateSyntheticData()} function in this report. The for-loops are necessary to generate the different datasets for the different settings in number of samples, percentage of differentially expressed genes as well as if a RNA or Ribosome dataset is generated. While the \texttt{assign()} command is used to give a unique name to the datasets. Four synthetic count datasets are generated with different settings as seen in table~\ref{table:tab11}.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccccc}
+Shortname & Genes & Samples & Differentially expressed [\%] &  \\\hline
+
+\shortstack{10000/2/0.01} 
+& \Sexpr{10000} 
+& \Sexpr{2}
+& \Sexpr{0.01} 
+\\
+
+\shortstack{10000/2/0.1} 
+& \Sexpr{10000} 
+& \Sexpr{2}
+& \Sexpr{0.1} 
+\\
+
+\shortstack{10000/4/0.01} 
+& \Sexpr{10000} 
+& \Sexpr{4}
+& \Sexpr{0.01} 
+\\
+
+\shortstack{10000/4/0.1} 
+& \Sexpr{10000} 
+& \Sexpr{4}
+& \Sexpr{0.1} 
+\\
+
+\end{tabular}
+\caption{The four different generated datasets}
+\label{table:tab11}
+\end{table}
+
+
+These will be the settings used until~\autoref{chap:CTDONG} where the number of genes for a fixed setting of the other two variables will be altered to 1'250, 2'500, 5'000 and 10'000.
+It is clear, that 1'250 up to 10'000 are low numbers for gene counts. But as stated above, the aim is to prove that Riborex is less time consuming without missing precision in identifying differentially expressed genes which should be measurable with low numbers of counts. 
+
+\section{Analysis}
+
+<< echo =F,results=hide >>=
+library(babel)
+library(xtail)
+set.seed(1)
+times <- matrix(NA, ncol = 4)
+colnames(times) <- c("time", "method", "samples", "diffExpr")
+
+
+for(i in 1:length(diffExpr)){
+  for(j in 1:length(nsamples)){
+    
+    colnames(RiboCntTable) <- colnames(RNACntTable) 
+    RNACntTable <- eval(parse(text=paste0(
+          "RNA.nsamples", nsamples[j], ".percDiffExpre", diffExpr[i], 
+          "@count.matrix", sep = "")))
+    
+    RiboCntTable <- eval(parse(text=paste0(
+          "Ribo.nsamples", nsamples[j], ".percDiffExpre", diffExpr[i], 
+          "@count.matrix", sep = "")))
+    
+    # both count tables need to have the same set of genes 
+    idx <- intersect(rownames(RiboCntTable), rownames(RNACntTable))
+    RNACntTable <- RNACntTable[idx, ]
+    RiboCntTable <- RiboCntTable[idx, ]
+    
+    condition <- c(rep("control", nsamples[j]), rep("treated", nsamples[j]))
+    
+    ## edgeR
+    start.time <- Sys.time()
+    res <- riborex(RNACntTable, RiboCntTable, condition, condition, engine = "edgeR")
+    time <- as.numeric(difftime(Sys.time(), start.time, units = "secs"))
+    times <- rbind(times, c(time, "edgeR", nsamples[j], diffExpr[i]))
+    times[nrow(times), 2] <- "edgeR"
+
+    
+    assign(paste0("res.riborex.edgeR.nsamples", nsamples[j],
+                  ".percDiffExpre", diffExpr[i], sep = ""), res)
+    
+    ## Voom
+    start.time <- Sys.time()
+    res <- riborex(RNACntTable, RiboCntTable, condition, condition, engine = "Voom")
+    time <- as.numeric(difftime(Sys.time(), start.time, units = "secs"))
+    times <- rbind(times, c(time, "Voom", nsamples[j], diffExpr[i]))
+    times[nrow(times), 2] <- "Voom"
+
+    assign(paste0("res.riborex.Voom.nsamples", nsamples[j],
+                  ".percDiffExpre", diffExpr[i], sep = ""), res)
+    
+    ## xtail
+    start.time <- Sys.time()
+    res <- xtail(RNACntTable, RiboCntTable, condition, bins=1000) 
+    time <- as.numeric(difftime(Sys.time(), start.time, units = "secs"))
+    times <- rbind(times, c(time, "xtail", nsamples[j], diffExpr[i]))
+    times[nrow(times), 2] <- "xtail"
+    
+    assign(paste0("res.xtail.nsamples", nsamples[j],
+                  ".percDiffExpre", diffExpr[i], sep = ""), res)
+    
+    ## babel
+    start.time <- Sys.time()
+    res <- babel(RNACntTable, RiboCntTable, group = condition, nreps = 100000)
+    time <- as.numeric(difftime(Sys.time(), start.time, units = "secs"))
+    times <- rbind(times, c(time, "babel", nsamples[j], diffExpr[i]))
+    times[nrow(times), 2] <- "babel"
+    
+    assign(paste0("res.babel.nsamples", nsamples[j],
+                  ".percDiffExpre", diffExpr[i], sep = ""), res)
+    
+    ## DESeq2
+    # need to have different colnames in RNACntTable and RiboCntTable
+    colnames(RiboCntTable) <- 1:ncol(RNACntTable)
+    start.time <- Sys.time()
+    res <- riborex(RNACntTable, RiboCntTable, condition, condition, engine = "DESeq2")
+    time <- as.numeric(difftime(Sys.time(), start.time, units = "secs"))
+    times <- rbind(times, c(time, "DESeq2", nsamples[j], diffExpr[i]))
+    times[nrow(times), 2] <- "DESeq2"
+    
+    assign(paste0("res.riborex.DESeq2.nsamples", nsamples[j],
+                  ".percDiffExpre", diffExpr[i], sep = ""), res)
+  }
+}
+
+
+library(e1071)
+library(caret)
+
+for(i in 1:length(diffExpr)){
+  for(j in 1:length(nsamples)){
+    
+    # riborex DESeq2
+    genes <- rownames(res.riborex.DESeq2.nsamples2.percDiffExpre0.01)
+    predDiffExpr <- ifelse(res.riborex.DESeq2.nsamples2.percDiffExpre0.01$pvalue < 0.05, 1, 0)
+    
+    myidx <- match(genes, rownames(RNA.nsamples2.percDiffExpre0.01@count.matrix))
+    trueDiffExpr <- (RNA.nsamples2.percDiffExpre0.01@variable.annotations$differential.expression)[myidx]
+    conf <- confusionMatrix(predDiffExpr, trueDiffExpr)
+    assign(paste0("conf.riborex.DESeq2.nsamples", nsamples[j],
+                  ".percDiffExpre", diffExpr[i], sep = ""), conf)
+    
+    # riborex edgeR
+    genes <- rownames(res.riborex.edgeR.nsamples2.percDiffExpre0.01)
+    predDiffExpr <- ifelse(res.riborex.edgeR.nsamples2.percDiffExpre0.01$table$PValue < 0.05, 1, 0)
+    
+    myidx <- match(genes, rownames(RNA.nsamples2.percDiffExpre0.01@count.matrix))
+    trueDiffExpr <- (RNA.nsamples2.percDiffExpre0.01@variable.annotations$differential.expression)[myidx]
+    conf <- confusionMatrix(predDiffExpr, trueDiffExpr)
+    assign(paste0("conf.riborex.edgeR.nsamples", nsamples[j],
+                  ".percDiffExpre", diffExpr[i], sep = ""), conf)
+    
+    
+    # babbel
+    idxToDelete <- which(is.na(res.babel.nsamples2.percDiffExpre0.01$between$control.vs.treated$`P-value`))
+    genes <- as.character((res.babel.nsamples2.percDiffExpre0.01$between$control.vs.treated$Gene)[-idxToDelete])
+    myidx <- match(genes, rownames(RNA.nsamples2.percDiffExpre0.01@count.matrix))
+    
+    predDiffExpr <- (res.babel.nsamples2.percDiffExpre0.01$between$control.vs.treated$`P-value`)[-idxToDelete]
+    
+    predDiffExpr <- ifelse(predDiffExpr < 0.05, 1, 0)
+    
+    trueDiffExpr <- (RNA.nsamples2.percDiffExpre0.01@variable.annotations$differential.expression)[myidx]
+    conf <- confusionMatrix(predDiffExpr, trueDiffExpr)
+    assign(paste0("conf.babel.nsamples", nsamples[j],
+                  ".percDiffExpre", diffExpr[i], sep = ""), conf)
+    
+    
+    # xtail
+    idx <- which(!is.na(res.xtail.nsamples2.percDiffExpre0.01[["resultsTable"]][["pvalue_final"]]))
+    predDiffExpr <- (res.xtail.nsamples2.percDiffExpre0.01[["resultsTable"]][["pvalue_final"]])[idx]
+    predDiffExpr <- ifelse(predDiffExpr < 0.05, 1, 0)
+    
+    genes <- as.character(rownames(res.xtail.nsamples2.percDiffExpre0.01$resultsTable)[idx])
+    myidx <- match(genes, rownames(RNA.nsamples2.percDiffExpre0.01@count.matrix))
+    trueDiffExpr <- (RNA.nsamples2.percDiffExpre0.01@variable.annotations$differential.expression)[myidx]
+    conf <- confusionMatrix(predDiffExpr, trueDiffExpr)
+    assign(paste0("conf.xtail.nsamples", nsamples[j],
+                  ".percDiffExpre", diffExpr[i], sep = ""), conf)
+    
+    
+    # Voom 
+    genes <- rownames(res.riborex.Voom.nsamples2.percDiffExpre0.01)
+    predDiffExpr <- ifelse(res.riborex.Voom.nsamples2.percDiffExpre0.01$P.Value < 0.05, 1, 0)
+    
+    myidx <- match(genes, rownames(RNA.nsamples2.percDiffExpre0.01@count.matrix))
+    trueDiffExpr <- (RNA.nsamples2.percDiffExpre0.01@variable.annotations$differential.expression)[myidx]
+    conf <- confusionMatrix(predDiffExpr, trueDiffExpr)
+    assign(paste0("conf.riborex.Voom.nsamples", nsamples[j],
+                  ".percDiffExpre", diffExpr[i], sep = ""), conf)
+  }
+}
+
+@
+
+In the main part of this report the F1 scores will be compared at first followed by a comparison of the accuracy with the corresponding 95\% confidence intervals. To find out, whether the functions / engines are particularly designed for finding differentially translated genes an analysis of the positive predictive value and the negative predictive value is done.\\ 
+This first part should answer the claim of \citep{Li2017} that the Riborex package is as accurate as other existing methods such as Xtail and Babel. In the second part, a comparison of computing time with fixed numbers of genes is conducted as well as a computation time assessment as a function of the number of genes. This should answer the claim that the package is faster than any other having the same purpose.
+
+In a first step the \texttt{riborex()}, Xtail and Babel function is given the four different datasets.
+
+<<echo=T, eval=F>>=
+# Set the start time
+start.time <- Sys.time()
+
+# Actual computing: identifying differentially expressed genes 
+# by co-analyzing both RNA- and Ribo-seq data 
+res <- riborex(RNACntTable, RiboCntTable, condition, condition, 
+               engine = "edgeR")
+
+# Stop the time save it in seconds
+time <- as.numeric(difftime(Sys.time(), start.time, 
+                            units = "secs"))
+
+# Save the time along with the used method, the number of 
+# samples and the percent of differentiall expressed 
+# genes in a matrix
+times <- rbind(times, 
+               c(time, "edgeR", nsamples[j], diffExpr[i]))
+
+# give the result list a setting specific name
+assign(paste0("res.riborex.edgeR.nsamples", nsamples[j],
+              ".percDiffExpre", diffExpr[i], sep = ""), res)
+@
+
+The code junk for the Riborex function with the edgeR engine is used here exemplarily. Although there are some differences, variables that must be given over to the functions do not vary much compared to other engines and Xtail as well as Babel. A RNA and  Ribosome count table must be specified as well as the conditions - treated or control. \\
+The rest of the code does the time measurement (the difference between start and end time is measured).
+
+\subsection{F1 scores}
+
+Like in \citep{Li2017} the F1 scores are displayed in figure~\ref{fig:fig1} (the color code with black, red, green, blue and violet for the different functions will be used in the same fashion for all figures throughout the rest of this report). There is almost no difference between the F1 scores when applying a differetent dataset, so 10'000/4/0.01 is chosen at random.\\ 
+The scores look very similar, all methods arrive at a very high score with some minor differences between the engines / functions. The relatively high F1 scores can be explained by the fact that simulated data was used instead of real data. This stands in comparison to \citep{Li2017} where they arrived at values around 0.8 based on the fact that they randomly assigned fold changes. This was was not conducted in this very report. Additionally, it has to be noted that the F1 score here is based on just one run of the different functions / engines while in \citep{Li2017} up to a 100 runs were conducted.
+
+\begin{figure}
+\begin{center}
+<< echo =F,results=hide, fig=T,height=5,width=8>>=
+method <- c("DESeq2", "edgeR", "Voom", "Xtail", "Babel")
+
+F1scores.2.01 <- c(conf.riborex.DESeq2.nsamples2.percDiffExpre0.01[["byClass"]][["F1"]],
+              conf.riborex.edgeR.nsamples2.percDiffExpre0.01[["byClass"]][["F1"]],
+              conf.riborex.Voom.nsamples2.percDiffExpre0.01[["byClass"]][["F1"]],
+              conf.xtail.nsamples2.percDiffExpre0.01[["byClass"]][["F1"]],
+              conf.babel.nsamples2.percDiffExpre0.01[["byClass"]][["F1"]])
+
+F1scores.2.10 <- c(conf.riborex.DESeq2.nsamples2.percDiffExpre0.1[["byClass"]][["F1"]],
+                   conf.riborex.edgeR.nsamples2.percDiffExpre0.1[["byClass"]][["F1"]],
+                   conf.riborex.Voom.nsamples2.percDiffExpre0.1[["byClass"]][["F1"]],
+                   conf.xtail.nsamples2.percDiffExpre0.1[["byClass"]][["F1"]],
+                   conf.babel.nsamples2.percDiffExpre0.1[["byClass"]][["F1"]])
+
+F1scores.4.01 <- c(conf.riborex.DESeq2.nsamples4.percDiffExpre0.01[["byClass"]][["F1"]],
+                   conf.riborex.edgeR.nsamples4.percDiffExpre0.01[["byClass"]][["F1"]],
+                   conf.riborex.Voom.nsamples4.percDiffExpre0.01[["byClass"]][["F1"]],
+                   conf.xtail.nsamples4.percDiffExpre0.01[["byClass"]][["F1"]],
+                   conf.babel.nsamples4.percDiffExpre0.01[["byClass"]][["F1"]])
+
+F1scores.4.10 <- c(conf.riborex.DESeq2.nsamples4.percDiffExpre0.1[["byClass"]][["F1"]],
+                   conf.riborex.edgeR.nsamples4.percDiffExpre0.1[["byClass"]][["F1"]],
+                   conf.riborex.Voom.nsamples4.percDiffExpre0.1[["byClass"]][["F1"]],
+                   conf.xtail.nsamples4.percDiffExpre0.1[["byClass"]][["F1"]],
+                   conf.babel.nsamples4.percDiffExpre0.1[["byClass"]][["F1"]])
+
+ylim1 <- c(0, 1.1*max(F1scores.4.10))
+xx <- barplot(F1scores.4.10, xaxt = 'n', xlab = '', width = 0.85,ylim=ylim1,
+              main = "10'000 / 4 / 0.01", 
+              ylab = "F1 Score", col=c(1,2,3,4,6))
+text(x = xx, y = F1scores.4.10, label = round(F1scores.4.10,3), pos = 3, cex = 0.8)
+axis(1, at=xx, labels=method, tick = FALSE,  las=1)
+
+mtext('F1 scores for different settings', outer = TRUE, cex=1.5)
+
+@
+\caption{F1 scores for the different methods for 10000/4/0.01}
+\label{fig:fig1}
+\end{center}
+\end{figure}
+
+
+
+\subsection{Accuracy}
+
+Since the F1 scores did not reveal too much information about differences, the accuracy with its 95\% confidence interval as seen in figure~\ref{fig:fig4} is used for further assessment. Here, a clear difference between the engines is visible.\\ 
+While the accuracy of DESeq2 scores the highest, the other four are all below. Only calculations with one fixed dataset are displayed because, as before, the figure does not differ significantly for the four different datasets. The set 10'000 / 2 / 0.01 was chosen again for consistency reasons.
+
+<< echo =F,results=hide>>=
+library(gplots)
+accuracy <- c(
+  conf.riborex.DESeq2.nsamples2.percDiffExpre0.01$overall[c("Accuracy", "AccuracyLower", "AccuracyUpper")],
+  conf.riborex.edgeR.nsamples2.percDiffExpre0.01$overall[c("Accuracy", "AccuracyLower", "AccuracyUpper")],
+  conf.riborex.Voom.nsamples2.percDiffExpre0.01$overall[c("Accuracy", "AccuracyLower", "AccuracyUpper")],
+  conf.xtail.nsamples2.percDiffExpre0.01$overall[c("Accuracy", "AccuracyLower", "AccuracyUpper")],
+  conf.babel.nsamples2.percDiffExpre0.01$overall[c("Accuracy", "AccuracyLower", "AccuracyUpper")]
+)
+
+Accuracy <- matrix(accuracy, ncol = 3, byrow = TRUE)
+@
+
+\begin{figure}
+\begin{center}
+<<echo=T, fig=T,height=5,width=8>>=
+plotCI(1:5, Accuracy[,1], ui=Accuracy[,3], li=Accuracy[,2], 
+       col =c(1,2,3,4,6), xlab = "", ylab = "Accuracy [%]", 
+       xaxt = 'n', main = "Accuracy of 10'000 / 2 / 0.01")
+axis(1, at = 1:5, labels = method)
+@
+\caption{Accuracy with 95\% confidence interval of the different methods}
+\label{fig:fig4}
+\end{center}
+\end{figure}
+
+The \texttt{plotCI()} function is used here to visualize the accuracy estimates along with their confidence intervals is from the package \texttt{gplots()}. The three values for lower bound, upper bound and point estimate are from an object created by the \texttt{confusionMatrix()} function.
+
+\subsection{Predictive values}
+
+A third value of interest after F1 scores and accuracy are predictive values. Displayed in figure~\ref{fig:fig3} they do not show a diverse picture of the situation. While the positive predictive values (PPV) are all very high and close to 1 with a difference under 1\%, the negative predictive values (NPV) show values of < 10 \%. The best performing tool is, like before for accuracy, DESeq2 with the highest PPV and NPV.\\ It seems, that the packages and engines are well designed to find the differentially expressed genes and take a heavy toll on the negative side. It seems that the cost for false negative are higher than for false positive. There is to add that it does not matter which dataset is used for the analysis as they lead to approximately the same numbers.
+
+\begin{figure}
+\begin{center}
+<< echo =F,results=hide, fig=T, height=5, width=8>>=
+predValues <- c(
+  conf.riborex.DESeq2.nsamples2.percDiffExpre0.01$byClass[c("Pos Pred Value", "Neg Pred Value")],
+  conf.riborex.edgeR.nsamples2.percDiffExpre0.01$byClass[c("Pos Pred Value", "Neg Pred Value")],
+  conf.riborex.Voom.nsamples2.percDiffExpre0.01$byClass[c("Pos Pred Value", "Neg Pred Value")],
+  conf.xtail.nsamples2.percDiffExpre0.01$byClass[c("Pos Pred Value", "Neg Pred Value")],
+  conf.babel.nsamples2.percDiffExpre0.01$byClass[c("Pos Pred Value", "Neg Pred Value")])
+
+PredValues <- matrix(predValues, ncol = 2, byrow = TRUE)
+
+x <- seq(0.5, 4.5, by = 1)
+x2 <- seq(1.5, 5.5, by = 1)
+plot(NA,xlim=c(0,6),ylim=c(0,1.1),
+     xlab = "", ylab = " Predictive Values [%]", xaxt = 'n', pch = "-",
+     main = "Predictive Value Comparison of 10'000 / 2 / 0.01")
+segments(x,PredValues[,1],x+1,PredValues[,1], col = 4)
+segments(x,PredValues[,2],x+1,PredValues[,2], col = 2)
+points(PredValues[,1]~x, pch = "|");points(PredValues[,1]~x2, pch = "|")
+points(PredValues[,2]~x, pch = "|");points(PredValues[,2]~x2, pch = "|")
+axis(1, at = 1:5, labels = method)
+text(x = 1:5, y = PredValues[,1], label = round(PredValues[,1],3), pos = 3, cex = 0.8)
+text(x = 1:5, y = PredValues[,2], label = round(PredValues[,2],3), pos = 3, cex = 0.8)
+legend(x=2.3,y=0.75, lty=1, col = c(4, 2),  legend = c("PPV", "NPV"))
+box()
+@
+
+\caption{Predictive values for 10000/2/0.01 of the different functions / engines}
+\label{fig:fig3}
+\end{center}
+\end{figure}
+
+
+
+\subsection{Time comparison}
+\label{chap:TimeComp}
+
+The major claim of \citep{Li2017} was that the Riborex package is much faster than other existing methods. While the focus in this subsection lies on the raw computation time without alterations, the next subsection (see~\autoref{chap:CTDONG}) deals with the growth of computation time linked to the number of genes in the dataset.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccccc}
+Execution time & \multicolumn{3}{c}{Riborex} & Xtail & Babel \\
+datasets & DESeq2 & edgeR & Voom &  \\\hline
+
+\shortstack{10000/2/0.01} 
+& \Sexpr{round(as.numeric((times[which(times[,2] == "DESeq2" & times[,3] == 2 & times[,4]== 0.01),])[1]),3)} s
+& \Sexpr{round(as.numeric((times[which(times[,2] == "edgeR" & times[,3] == 2 & times[,4] == 0.01),])[1]),3)} s
+& \Sexpr{round(as.numeric((times[which(times[,2] == "Voom" & times[,3] == 2 & times[,4] == 0.01),])[1]),3)} s
+& \Sexpr{round(as.numeric((times[which(times[,2] == "xtail" & times[,3] == 2 & times[,4] == 0.01),])[1]),3)} s
+& \Sexpr{round(as.numeric((times[which(times[,2] == "babel" & times[,3] == 2 & times[,4] == 0.01),])[1]),3)} s
+\\
+
+\shortstack{10000/2/0.1} 
+& \Sexpr{round(as.numeric((times[which(times[,2] == "DESeq2" & times[,3] == 2 & times[,4] == 0.1),])[1]),3)} s
+& \Sexpr{round(as.numeric((times[which(times[,2] == "edgeR" & times[,3] == 2 & times[,4] == 0.1),])[1]),3)} s
+& \Sexpr{round(as.numeric((times[which(times[,2] == "Voom" & times[,3] == 2 & times[,4] == 0.1),])[1]),3)} s
+& \Sexpr{round(as.numeric((times[which(times[,2] == "xtail" & times[,3] == 2 & times[,4] == 0.1),])[1]),3)} s
+& \Sexpr{round(as.numeric((times[which(times[,2] == "babel" & times[,3] == 2 & times[,4] == 0.1),])[1]),3)} s
+\\
+
+\shortstack{10000/4/0.01} 
+& \Sexpr{round(as.numeric((times[which(times[,2] == "DESeq2" & times[,3] == 4 & times[,4] == 0.01),])[1]),3)} s
+& \Sexpr{round(as.numeric((times[which(times[,2] == "edgeR" & times[,3] == 4 & times[,4] == 0.01),])[1]),3)} s
+& \Sexpr{round(as.numeric((times[which(times[,2] == "Voom" & times[,3] == 4 & times[,4] == 0.01),])[1]),3)} s
+& \Sexpr{round(as.numeric((times[which(times[,2] == "xtail" & times[,3] == 4 & times[,4] == 0.01),])[1]),3)} s
+& \Sexpr{round(as.numeric((times[which(times[,2] == "babel" & times[,3] == 4 & times[,4] == 0.01),])[1]),3)} s
+\\
+
+\shortstack{10000/4/0.1} 
+& \Sexpr{round(as.numeric((times[which(times[,2] == "DESeq2" &times[,3] == 4 & times[,4] == 0.1),])[1]),3)} s
+& \Sexpr{round(as.numeric((times[which(times[,2] == "edgeR" & times[,3] == 4 & times[,4] == 0.1),])[1]),3)} s
+& \Sexpr{round(as.numeric((times[which(times[,2] == "Voom" & times[,3] == 4 & times[,4] == 0.1),])[1]),3)} s
+& \Sexpr{round(as.numeric((times[which(times[,2] == "xtail" & times[,3] == 4 & times[,4] == 0.1),])[1]),3)} s
+& \Sexpr{round(as.numeric((times[which(times[,2] == "babel" & times[,3] == 4 & times[,4] == 0.1),])[1]),3)} s
+\\
+
+\end{tabular}
+\caption{Running time of Riborex with its three engines, Xtail and Babel on four datasets}
+\label{table:tab1}
+\end{table}
+
+
+As visible in table ~\ref{table:tab1}, Xtail as Babel take considerably more time to compute (from up to over 6 fold more between DESeq2 and Xtail, to 360 fold between Voom and Babel). Riborex with its different engines runs much faster by a wide margin compared to the other two. The percentage of differentially expressed genes does not seem to have an effect on the computing time at first sight, however, the number of samples does. With doubled amount of samples per condition the time is higher as well, the factor the computation time is multiplied with underlies great variation across used methods. 
+
+\subsection{Computation time dependent on the number of genes}
+\label{chap:CTDONG}
+
+The differences between the functions in the computation time almost certainly has a root in the number of genes which need to be analyzed. For that purpose four different gene counts (1'250, 2'500, 5'000 and 10'000) are used to display the behavior of the computation time.\\ These gene counts are set up in a way that the next count is always by factor 2 bigger than the previous one. 
+As of that one would expect intuitionally, a doubled number of genes in each dataset proportionally might lead to a doubled amount of computation time.
+
+
+<<echo = F,results=hide>>=
+library(compcodeR)
+library(riborex)
+set.seed(1)
+
+timesXALL <- c(0,0,0,0)
+
+for(i in 1:4){  
+  ngenes <- 625*(2^i)  #625* for 10 000 in the end, 30 runs faster
+  data(riborexdata)
+  RNACntTable <- rna
+  RiboCntTable <- ribo
+  
+  
+  # RNA
+  means.rna <- c(as.numeric(apply(RNACntTable,1,mean )))[1:ngenes]
+  disp.rna.control <- estimateDisp(RNACntTable[,1:2])$trended.dispersion[1:ngenes] #estimateDisp from X8 edgeR
+  disp.rna.treated <- estimateDisp(RNACntTable[,3:4])$trended.dispersion[1:ngenes] #estimateDisp from X8 edgeR
+  disp.rna <- cbind(disp.rna.control, disp.rna.treated)
+  
+  # Ribo
+  means.ribo <- c(as.numeric(apply(RiboCntTable,1,mean )))[1:ngenes]  #Ribo
+  disp.ribo.control <- estimateDisp(RiboCntTable[,1:2])$trended.dispersion[1:ngenes] #estimateDisp from X8 edgeR
+  disp.ribo.treated <- estimateDisp(RiboCntTable[,3:4])$trended.dispersion[1:ngenes] #estimateDisp from X8 edgeR
+  disp.ribo <- cbind(disp.ribo.control, disp.ribo.treated)
+  
+  means <- list(means.rna, means.ribo)
+  disp <- list(disp.rna, disp.ribo)
+  
+  diffExpr <- 0.1
+  nsamples <- 2
+  RnaOrRibo <- c(1, 2) # whereas 1 stands for RNA and 2 for Ribo
+  
+  for(i in 1:length(diffExpr)){
+    for(j in 1:length(nsamples)){
+      for(v in 1:length(RnaOrRibo)){
+        myData <- generateSyntheticData(dataset = "11", 
+                                        n.vars = ngenes,
+                                        samples.per.cond = nsamples[j], 
+                                        n.diffexp = ngenes*diffExpr[i],
+                                        relmeans = means[[v]],
+                                        dispersions = disp[[v]])
+        
+        type <- ifelse(RnaOrRibo[v] == 1, "RNA", "Ribo")
+        
+        assign(paste0(type,
+                      ".nsamples", nsamples[j],
+                      ".percDiffExpre", diffExpr[i], sep = ""), myData)
+      }
+    }
+  }
+  
+  library(babel)
+  library(xtail)
+  
+  timesX <- matrix(NA, ncol = 4)
+  colnames(timesX) <- c("time", "method", "samples", "diffExpr")
+  
+  
+  for(i in 1:length(diffExpr)){
+    for(j in 1:length(nsamples)){
+      
+      colnames(RiboCntTable) <- colnames(RNACntTable) 
+      RNACntTable <- eval(parse(text=paste0(
+        "RNA.nsamples", nsamples[j], ".percDiffExpre", diffExpr[i], 
+        "@count.matrix", sep = "")))
+      
+      RiboCntTable <- eval(parse(text=paste0(
+        "Ribo.nsamples", nsamples[j], ".percDiffExpre", diffExpr[i], 
+        "@count.matrix", sep = "")))
+      
+      # both count tables need to have the same set of genes 
+      idx <- intersect(rownames(RiboCntTable), rownames(RNACntTable))
+      RNACntTable <- RNACntTable[idx, ]
+      RiboCntTable <- RiboCntTable[idx, ]
+      
+      condition <- c(rep("control", nsamples[j]), rep("treated", nsamples[j]))
+      
+      ## edgeR
+      start.time <- Sys.time()
+      res <- riborex(RNACntTable, RiboCntTable, condition, condition, engine = "edgeR")
+      time <- as.numeric(difftime(Sys.time(), start.time, units = "secs"))
+      timesX <- rbind(timesX, c(time, "edgeR", nsamples[j], diffExpr[i]))
+      timesX[nrow(timesX), 2] <- "edgeR"
+      
+      
+      assign(paste0("res.riborex.edgeR.nsamples", nsamples[j],
+                    ".percDiffExpre", diffExpr[i], sep = ""), res)
+      
+      ## Voom
+      start.time <- Sys.time()
+      res <- riborex(RNACntTable, RiboCntTable, condition, condition, engine = "Voom")
+      time <- as.numeric(difftime(Sys.time(), start.time, units = "secs"))
+      timesX <- rbind(timesX, c(time, "Voom", nsamples[j], diffExpr[i]))
+      timesX[nrow(timesX), 2] <- "Voom"
+      
+      assign(paste0("res.riborex.Voom.nsamples", nsamples[j],
+                    ".percDiffExpre", diffExpr[i], sep = ""), res)
+      
+      ## xtail
+      start.time <- Sys.time()
+      res <- xtail(RNACntTable, RiboCntTable, condition, bins=1000) 
+      time <- as.numeric(difftime(Sys.time(), start.time, units = "secs"))
+      timesX <- rbind(timesX, c(time, "xtail", nsamples[j], diffExpr[i]))
+      timesX[nrow(timesX), 2] <- "xtail"
+      
+      assign(paste0("res.xtail.nsamples", nsamples[j],
+                    ".percDiffExpre", diffExpr[i], sep = ""), res)
+      
+      ## babel
+      start.time <- Sys.time()
+      res <- babel(RNACntTable, RiboCntTable, group = condition, nreps = 100000)
+      time <- as.numeric(difftime(Sys.time(), start.time, units = "secs"))
+      timesX <- rbind(timesX, c(time, "babel", nsamples[j], diffExpr[i]))
+      timesX[nrow(timesX), 2] <- "babel"
+      
+      assign(paste0("res.babel.nsamples", nsamples[j],
+                    ".percDiffExpre", diffExpr[i], sep = ""), res)
+      
+      ## DESeq2
+      # need to have different colnames in RNACntTable and RiboCntTable
+      colnames(RiboCntTable) <- 1:ncol(RNACntTable)
+      start.time <- Sys.time()
+      res <- riborex(RNACntTable, RiboCntTable, condition, condition, engine = "DESeq2")
+      time <- as.numeric(difftime(Sys.time(), start.time, units = "secs"))
+      timesX <- rbind(timesX, c(time, "DESeq2", nsamples[j], diffExpr[i]))
+      timesX[nrow(timesX), 2] <- "DESeq2"
+      
+      assign(paste0("res.riborex.DESeq2.nsamples", nsamples[j],
+                    ".percDiffExpre", diffExpr[i], sep = ""), res)
+    }
+  }
+  
+  timesXALL<-rbind(timesXALL,timesX)
+  
+}
+@
+
+
+\begin{figure}
+\begin{center}
+<< echo=F , results=hide, fig=TRUE ,height=10,width=8>>=
+xx<-c(1250,2500,5000,10000)
+
+edgeRTime<-c(as.numeric(timesXALL[3,1]), as.numeric(timesXALL[9,1]), as.numeric(timesXALL[15,1]), as.numeric(timesXALL[21,1]))
+VoomTime<-c(as.numeric(timesXALL[4,1]), as.numeric(timesXALL[10,1]), as.numeric(timesXALL[16,1]), as.numeric(timesXALL[22,1]))
+XtailTime<-c(as.numeric(timesXALL[5,1]), as.numeric(timesXALL[11,1]), as.numeric(timesXALL[17,1]), as.numeric(timesXALL[23,1]))
+
+babelTime<-c(as.numeric(timesXALL[6,1]), as.numeric(timesXALL[12,1]), as.numeric(timesXALL[18,1]), as.numeric(timesXALL[24,1]))
+DESeq2Time<-c(as.numeric(timesXALL[7,1]), as.numeric(timesXALL[13,1]), as.numeric(timesXALL[19,1]), as.numeric(timesXALL[25,1]))
+
+
+par(mfrow=c(2,1),oma = c(0, 0, 2, 0))
+plot(xx,DESeq2Time, type='b', xlim =c(1200,10050),ylim =c(0,2+max(c(edgeRTime,VoomTime,DESeq2Time))), ylab ='Seconds',
+     xlab='Number of genes')
+lines(xx,VoomTime, col = 3, type = 'b')
+lines(xx,edgeRTime, col = 2, type = 'b')
+legend("topleft", lty=1, col = c(1, 2, 3),  legend = c("DESeq2", "edgeR","Voom"))
+
+
+
+plot(xx,babelTime, type='b', xlim =c(1200,10050),ylim =c(0,50+max(c(babelTime,XtailTime))), ylab ='Seconds', xlab='Number of genes', col =6)
+lines(xx,XtailTime, type ='b', col =4)
+legend("topleft", lty=1, col = c(6, 4),  legend = c("Babel","Xtail"))
+
+
+mtext("Progression of computation time with increasing number of genes for setting 10'000/2/0.1", outer = TRUE)
+
+
+@
+\caption{Computation time for four different ammounts of genes for the different engines / functions}
+\label{fig:fig2}
+\end{center}
+\end{figure}
+
+
+Figure~\ref{fig:fig2} displays the computation times in two plots, which is necessary because the computation time of the fast Riborex engines would not be visible due to immense time differences between the methods used. Furthermore the transformation to a log scale would complicate the interpretation, and was not conducted hence. While edgeR and Voom only show modest increase in computation time, DESeq2 displays an almost linear increase with a slope of two. The computation time of the Xtail package increases only marginally, starting, however, at a high point. Babel shows a almost log like curve. One may assume, that increase in computational time per gene drops with the number of genes rising.
+
+\section{Conclusion}
+
+It has been shown that the F1 scores for all methods are very high, even higher than in \citep{Li2017}, which is due to data simulation. Additionally the accuracy and positive predictive values are high.\\
+All the different methods used are therefore very precise at identifying differentially translated genes by co-analyzing both RNA- and Ribo-seq data. The negative predictive values hence are not taken into account in this report in detail. Precision for datasets altering number of samples and amount of differentially translated genes did not change substantially. The Ribroex methods took considerably less computational time than Xtail and Babel in the range of up to 10'000 genes. That the methods differentially behave concerning the computational time by changing the number of genes is revealed in figure ~\ref{fig:fig2}. It might be interesting in a next step to examine the packages with $>>$10'000 genes.\\ In conclusion it could be proved that the Riborex package with its three engines - namely Voom, DESeq2 and edgeR - do not lack precision in identifying differentially translated genes compared to Xtail and Babel, do, however, need considerably less computational time.
+
+
+
+\pagebreak
+\bibliographystyle{agsm}
+\bibliography{Biblio}
+\end{document}
